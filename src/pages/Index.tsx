@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -29,8 +29,13 @@ const Index = () => {
   const [isOffline] = useState(true);
   const [showCamera, setShowCamera] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<WildlifePhoto | null>(null);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  const [trapPhotos] = useState<TrapPhoto[]>([
+  const [trapPhotos, setTrapPhotos] = useState<TrapPhoto[]>([
     { 
       id: '1', 
       trapModel: 'Bushnell Trophy Cam', 
@@ -113,6 +118,91 @@ const Index = () => {
       case 'offline': return 'bg-destructive';
       default: return 'bg-muted';
     }
+  };
+
+  useEffect(() => {
+    if (showCamera && !cameraStream) {
+      startCamera();
+      getCurrentLocation();
+    }
+    
+    return () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [showCamera]);
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment', width: 1920, height: 1080 } 
+      });
+      setCameraStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (error) {
+      console.error('Camera access error:', error);
+    }
+  };
+
+  const getCurrentLocation = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setGpsCoords({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+        },
+        (error) => {
+          console.error('GPS error:', error);
+          setGpsCoords({ lat: 70.6638, lng: 147.9152 });
+        }
+      );
+    } else {
+      setGpsCoords({ lat: 70.6638, lng: 147.9152 });
+    }
+  };
+
+  const capturePhoto = () => {
+    if (videoRef.current && canvasRef.current) {
+      const canvas = canvasRef.current;
+      const video = videoRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0);
+        const imageData = canvas.toDataURL('image/jpeg', 0.9);
+        setCapturedImage(imageData);
+      }
+    }
+  };
+
+  const saveTrapData = () => {
+    if (capturedImage && gpsCoords) {
+      const newTrap: TrapPhoto = {
+        id: String(trapPhotos.length + 1),
+        trapModel: 'Определяется...',
+        location: gpsCoords,
+        timestamp: new Date(),
+        battery: 100,
+        status: 'active'
+      };
+      setTrapPhotos([newTrap, ...trapPhotos]);
+      closeCamera();
+    }
+  };
+
+  const closeCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+      setCameraStream(null);
+    }
+    setCapturedImage(null);
+    setShowCamera(false);
   };
 
   return (
@@ -307,17 +397,30 @@ const Index = () => {
         </div>
       </div>
 
-      <Dialog open={showCamera} onOpenChange={setShowCamera}>
+      <Dialog open={showCamera} onOpenChange={closeCamera}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Идентификация фотоловушки</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="aspect-video bg-secondary rounded-lg flex items-center justify-center">
-              <div className="text-center">
-                <Icon name="Camera" size={48} className="text-muted-foreground mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground">Наведите камеру на корпус фотоловушки</p>
-              </div>
+            <div className="relative aspect-video bg-secondary rounded-lg overflow-hidden">
+              {!capturedImage ? (
+                <>
+                  <video 
+                    ref={videoRef} 
+                    autoPlay 
+                    playsInline
+                    className="w-full h-full object-cover"
+                  />
+                  <canvas ref={canvasRef} className="hidden" />
+                  <div className="absolute inset-0 pointer-events-none">
+                    <div className="absolute inset-4 border-2 border-primary/50 rounded-lg" />
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 border-2 border-primary rounded-full" />
+                  </div>
+                </>
+              ) : (
+                <img src={capturedImage} alt="Captured" className="w-full h-full object-cover" />
+              )}
             </div>
             
             <div className="grid grid-cols-2 gap-3">
@@ -326,8 +429,16 @@ const Index = () => {
                   <Icon name="Satellite" size={16} className="text-primary" />
                   <span className="text-xs text-muted-foreground">GPS</span>
                 </div>
-                <div className="text-sm font-semibold">70.6638, 147.9152</div>
-                <div className="text-xs text-muted-foreground">Точность ±2м</div>
+                {gpsCoords ? (
+                  <>
+                    <div className="text-sm font-semibold">
+                      {gpsCoords.lat.toFixed(4)}, {gpsCoords.lng.toFixed(4)}
+                    </div>
+                    <div className="text-xs text-muted-foreground">Точность ±2м</div>
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground">Определение...</div>
+                )}
               </div>
               
               <div className="p-3 bg-card rounded-lg border border-border">
@@ -344,10 +455,34 @@ const Index = () => {
               </div>
             </div>
 
-            <Button className="w-full h-12 bg-primary hover:bg-primary/90" onClick={() => setShowCamera(false)}>
-              <Icon name="Check" size={20} className="mr-2" />
-              Сохранить данные
-            </Button>
+            {!capturedImage ? (
+              <Button 
+                className="w-full h-12 bg-primary hover:bg-primary/90" 
+                onClick={capturePhoto}
+                disabled={!cameraStream}
+              >
+                <Icon name="Camera" size={20} className="mr-2" />
+                Сделать снимок
+              </Button>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Button 
+                  variant="outline" 
+                  className="h-12" 
+                  onClick={() => setCapturedImage(null)}
+                >
+                  <Icon name="RotateCcw" size={20} className="mr-2" />
+                  Переснять
+                </Button>
+                <Button 
+                  className="h-12 bg-primary hover:bg-primary/90" 
+                  onClick={saveTrapData}
+                >
+                  <Icon name="Check" size={20} className="mr-2" />
+                  Сохранить
+                </Button>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
